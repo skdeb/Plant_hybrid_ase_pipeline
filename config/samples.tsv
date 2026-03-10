@@ -1,2 +1,78 @@
-sample_id	data_type	vcf_sample	R1	R2
-test_sample	RNA-seq	sample_name_in_vcf	test_data/test_R1.fastq.gz	test_data/test_R2.fastq.gz
+# ============================================================
+# Plant Hybrid ASE Pipeline — Sample Sheet
+# ============================================================
+# One row per sample. Tab-separated.
+# Lines starting with # are comments and are ignored.
+#
+# COLUMNS:
+#
+#   sample_id    Unique sample identifier. Used as wildcard {sample}
+#                throughout the pipeline. No spaces or special characters.
+#
+#   data_type    Sequencing assay. Must be one of:
+#                  RNA-seq | ATAC-seq | ChIP-seq | MOA-seq
+#                Controls which aligner and WASP method are used.
+#
+#   vcf_sample   Sample name as it appears in the VCF column header.
+#
+#                Single-sample VCF (e.g. parental alignment VCF):
+#                  Set this to the one VCF sample name for EVERY row.
+#                  Example: all rows have vcf_sample = "Oh43"
+#
+#                Multi-sample VCF (e.g. GATK joint genotyping):
+#                  Set this to the matching VCF column name per row.
+#                  Example: sample B73xOh43_rep1 → vcf_sample = "B73xOh43_rep1"
+#
+#   R1           Path to raw Read 1 FASTQ (gzipped).
+#                Required if start_from: fastq. Otherwise set to NA.
+#
+#   R2           Path to raw Read 2 FASTQ (gzipped).
+#                Required if start_from: fastq. Otherwise set to NA.
+#
+#   trimmed_R1   Path to trimmed Read 1 FASTQ (gzipped).
+#                Required if start_from: trimmed. Otherwise set to NA.
+#                If start_from: fastq, pipeline writes trimmed FASTQs here
+#                automatically — leave as NA and pipeline fills it in.
+#
+#   trimmed_R2   Path to trimmed Read 2 FASTQ (gzipped).
+#                Same rules as trimmed_R1.
+#
+#   bam          Path to aligned BAM (sorted, indexed).
+#                Required if start_from: bam. Otherwise set to NA.
+#
+#   wasp_bam     Path to WASP-filtered BAM (sorted, indexed).
+#                Required if start_from: wasp_bam. Otherwise set to NA.
+#
+# ── ENTRY POINT GUIDE ────────────────────────────────────────
+# Fill only the columns relevant to your start_from setting.
+# Set all other path columns to NA.
+#
+#   start_from: fastq     → fill: sample_id, data_type, vcf_sample, R1, R2
+#   start_from: trimmed   → fill: sample_id, data_type, vcf_sample, trimmed_R1, trimmed_R2
+#   start_from: bam       → fill: sample_id, data_type, vcf_sample, bam
+#   start_from: wasp_bam  → fill: sample_id, data_type, vcf_sample, wasp_bam
+#   start_from: counts    → fill: sample_id, data_type, vcf_sample
+#
+# ============================================================
+#
+# EXAMPLE A — Single-sample VCF (parental alignment VCF)
+# All hybrid samples share the same vcf_sample name "Oh43"
+# (the Parent B sample column in the VCF)
+#
+# sample_id	data_type	vcf_sample	R1	R2	trimmed_R1	trimmed_R2	bam	wasp_bam
+# B73xOh43_RNA_rep1	RNA-seq	Oh43	data/raw/rep1_R1.fastq.gz	data/raw/rep1_R2.fastq.gz	NA	NA	NA	NA
+# B73xOh43_RNA_rep2	RNA-seq	Oh43	data/raw/rep2_R1.fastq.gz	data/raw/rep2_R2.fastq.gz	NA	NA	NA	NA
+# B73xOh43_ATAC_rep1	ATAC-seq	Oh43	data/raw/atac1_R1.fastq.gz	data/raw/atac1_R2.fastq.gz	NA	NA	NA	NA
+#
+# EXAMPLE B — Multi-sample VCF (GATK joint genotyping)
+# Each sample has its own genotype column in the VCF
+#
+# sample_id	data_type	vcf_sample	R1	R2	trimmed_R1	trimmed_R2	bam	wasp_bam
+# B73xOh43_RNA_rep1	RNA-seq	B73xOh43_rep1	data/raw/rep1_R1.fastq.gz	data/raw/rep1_R2.fastq.gz	NA	NA	NA	NA
+# B73xOh43_RNA_rep2	RNA-seq	B73xOh43_rep2	data/raw/rep2_R1.fastq.gz	data/raw/rep2_R2.fastq.gz	NA	NA	NA	NA
+# B73xOh43_ATAC_rep1	ATAC-seq	B73xOh43_atac1	data/raw/atac1_R1.fastq.gz	data/raw/atac1_R2.fastq.gz	NA	NA	NA	NA
+#
+# ============================================================
+# DELETE the comment lines above and fill in your samples below
+# ============================================================
+sample_id	data_type	vcf_sample	R1	R2	trimmed_R1	trimmed_R2	bam	wasp_bam
