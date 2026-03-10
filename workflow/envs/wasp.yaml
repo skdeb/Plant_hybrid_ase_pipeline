@@ -1,0 +1,56 @@
+name: wasp
+# WASP standalone: used for ATAC-seq, ChIP-seq, MOA-seq mapping bias correction
+# (RNA-seq uses STAR+WASP inline instead - see star.yaml)
+#
+# No maintained bioconda/conda package exists. Install from GitHub (one-time on HPC):
+#   git clone https://github.com/bmvdgeijn/WASP.git resources/wasp
+#   export WASP_DIR=$(pwd)/resources/wasp   # add to your HPC profile
+#
+# Latest release: v0.3.4 (Python3-compatible)
+# We use --snp_dir text-file mode (NOT HDF5) → snp2h5 compilation NOT required.
+#
+# Scripts used from resources/wasp/mapping/:
+#   Step 2: find_intersecting_snps.py  → requires pysam, numpy
+#   Step 4: filter_remapped_reads.py   → requires pysam
+#   Step 5: samtools merge             → included below
+#   Step 6: rmdup_pe.py                → requires pysam (paired-end only)
+#
+# Full 6-step WASP standalone workflow (ATAC/ChIP/MOA, paired-end):
+#   Rule 1 [bowtie2.yaml]:
+#     bowtie2 → samtools sort/index → map1.sort.bam
+#
+#   Rule 2 [wasp.yaml]:
+#     find_intersecting_snps.py --is_paired_end --is_sorted --snp_dir snp_dir/
+#         map1.sort.bam
+#     → map1.keep.bam          (reads not overlapping SNPs - safe to keep)
+#     → map1.to.remap.bam      (original reads overlapping SNPs - need remapping)
+#     → map1.remap.fq1.gz / .fq2.gz  (allele-flipped FASTQs for remapping)
+#
+#   Rule 3 [bowtie2.yaml]:
+#     bowtie2 --remap → samtools sort → map2.sort.bam
+#     (same bowtie2 options as Rule 1, NO read-modifying flags like -5/-3)
+#
+#   Rule 4 [wasp.yaml]:
+#     filter_remapped_reads.py
+#         map1.to.remap.bam  map2.sort.bam  map2.keep.bam
+#     → map2.keep.bam        (remapped reads that passed WASP filter)
+#
+#   Rule 5 [wasp.yaml]:
+#     samtools merge  wasp.merged.bam  map1.keep.bam  map2.keep.bam
+#     samtools sort   wasp.merged.bam → wasp.merged.sort.bam
+#     samtools index  wasp.merged.sort.bam
+#
+#   Rule 6 [wasp.yaml]:
+#     rmdup_pe.py  wasp.merged.sort.bam  wasp.rmdup.bam
+#     samtools sort   wasp.rmdup.bam → wasp.rmdup.sort.bam
+#     samtools index  wasp.rmdup.sort.bam
+#     → wasp.rmdup.sort.bam   ← FINAL output, ready for phASER
+
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  - pysam=0.22.1
+  - numpy=2.1.3
+  - samtools=1.23
