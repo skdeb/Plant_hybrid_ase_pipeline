@@ -1,0 +1,400 @@
+# ============================================================
+# Plant Hybrid ASE Pipeline — Main Snakefile
+# ============================================================
+# Usage:
+#   snakemake --cores <N> --use-conda
+#
+# One-time setup (build indices if not already present):
+#   snakemake build_star_index      --cores 8 --use-conda
+#   snakemake build_bowtie2_index   --cores 8 --use-conda
+#   snakemake build_indices         --cores 8 --use-conda
+#
+# Named stage targets (modular entry points):
+#   snakemake vcf_prep         → VCF preparation only
+#   snakemake fastqc_raw       → raw FastQC + MultiQC only
+#   snakemake trim             → trimming only
+#   snakemake fastqc_trimmed   → trimmed FastQC + MultiQC only
+#   snakemake align            → alignment only
+#   snakemake wasp             → WASP filtering only
+#   snakemake phaser_sample    → phASER per-sample only
+#   snakemake phaser_pop       → phASER population-level only
+#   snakemake qc               → QC plots only
+# ============================================================
+
+import pandas as pd
+import sys
+from pathlib import Path
+
+
+# ── Load config and samples ──────────────────────────────────
+
+configfile: "config/config.yaml"
+
+samples = (
+    pd.read_csv(config["samples"], sep="\t", comment="#")
+    .set_index("sample_id", drop=False)
+)
+
+
+# ── Wildcard constraints ─────────────────────────────────────
+
+wildcard_constraints:
+    sample = "[A-Za-z0-9_\\-]+"
+
+
+# ── Helper functions ─────────────────────────────────────────
+
+def get_data_type(sample):
+    return samples.loc[sample, "data_type"]
+
+def is_rnaseq(sample):
+    return get_data_type(sample) == "RNA-seq"
+
+def get_vcf_sample(sample):
+    return samples.loc[sample, "vcf_sample"]
+
+def get_raw_r1(wildcards):
+    return samples.loc[wildcards.sample, "R1"]
+
+def get_raw_r2(wildcards):
+    return samples.loc[wildcards.sample, "R2"]
+
+def get_trimmed_r1(wildcards):
+    val = samples.loc[wildcards.sample, "trimmed_R1"]
+    if pd.isna(val) or str(val) == "NA":
+        return f"results/trim/{wildcards.sample}/{wildcards.sample}_R1.fastq.gz"
+    return val
+
+def get_trimmed_r2(wildcards):
+    val = samples.loc[wildcards.sample, "trimmed_R2"]
+    if pd.isna(val) or str(val) == "NA":
+        return f"results/trim/{wildcards.sample}/{wildcards.sample}_R2.fastq.gz"
+    return val
+
+def get_bam(wildcards):
+    val = samples.loc[wildcards.sample, "bam"]
+    if pd.isna(val) or str(val) == "NA":
+        if is_rnaseq(wildcards.sample):
+            return f"results/align/{wildcards.sample}/{wildcards.sample}.Aligned.sortedByCoord.out.bam"
+        else:
+            return f"results/align/{wildcards.sample}/{wildcards.sample}.sorted.bam"
+    return val
+
+def get_wasp_bam(wildcards):
+    val = samples.loc[wildcards.sample, "wasp_bam"]
+    if pd.isna(val) or str(val) == "NA":
+        if is_rnaseq(wildcards.sample):
+            return f"results/wasp/{wildcards.sample}/{wildcards.sample}.wasp.bam"
+        else:
+            return f"results/wasp/{wildcards.sample}/{wildcards.sample}.wasp.rmdup.bam"
+    return val
+
+def get_wasp_bai(wildcards):
+    return get_wasp_bam(wildcards) + ".bai"
+
+def get_phaser_mapq(wildcards):
+    if is_rnaseq(wildcards.sample):
+        return config["phaser_mapq_rnaseq"]
+    return config["phaser_mapq_other"]
+
+def get_all_samples():
+    return samples["sample_id"].tolist()
+
+def get_rnaseq_samples():
+    return samples[samples["data_type"] == "RNA-seq"]["sample_id"].tolist()
+
+def get_non_rnaseq_samples():
+    return samples[samples["data_type"] != "RNA-seq"]["sample_id"].tolist()
+
+
+# ── Target builder ───────────────────────────────────────────
+
+def get_final_targets():
+    """
+    Returns the list of final output files for rule all,
+    based on config start_from setting.
+    """
+    start       = config["start_from"]
+    all_samples = get_all_samples()
+    targets     = []
+
+    if start not in ["fastq", "trimmed", "bam", "wasp_bam", "counts"]:
+        raise ValueError(
+            f"Invalid start_from: '{start}'. "
+            f"Must be one of: fastq, trimmed, bam, wasp_bam, counts"
+        )
+
+    # VCF prep — always required
+    targets += [
+        config["vcf_star"],
+        config["vcf_phaser"],
+        config["vcf_phaser"] + ".tbi",
+        config["snp_dir"] + "/.done",
+    ]
+
+    # Raw QC
+    if start == "fastq":
+        targets += expand(
+            "results/fastqc_raw/{sample}/{sample}_R1_fastqc.html",
+            sample=all_samples
+        )
+        targets += ["results/fastqc_raw/multiqc/multiqc_report.html"]
+
+    # Trimming
+    if start == "fastq":
+        targets += expand(
+            "results/trim/{sample}/{sample}_R1.fastq.gz",
+            sample=all_samples
+        )
+
+    # Trimmed QC
+    if start in ["fastq", "trimmed"]:
+        targets += expand(
+            "results/fastqc_trimmed/{sample}/{sample}_R1_fastqc.html",
+            sample=all_samples
+        )
+        targets += ["results/fastqc_trimmed/multiqc/multiqc_report.html"]
+
+    # Alignment
+    if start in ["fastq", "trimmed"]:
+        targets += [
+            get_bam(type("wc", (), {"sample": s})())
+            for s in all_samples
+        ]
+
+    # WASP
+    if start in ["fastq", "trimmed", "bam"]:
+        targets += [
+            get_wasp_bam(type("wc", (), {"sample": s})())
+            for s in all_samples
+        ]
+
+    # phASER per-sample — always a final target
+    targets += expand(
+        "results/phaser_sample/{sample}/{sample}.allelic_counts.txt",
+        sample=all_samples
+    )
+    targets += expand(
+        "results/phaser_sample/{sample}/{sample}.gene_ae.txt",
+        sample=all_samples
+    )
+
+    # phASER population — only if samples specified
+    if config.get("phaser_pop_samples", []):
+        targets += [
+            "results/phaser_pop/phaser_pop.txt",
+            "results/phaser_pop/phaser_pop_gene_ae.txt",
+        ]
+
+    # QC plots — always a final target
+    targets += ["results/qc_plots/qc_plots.done"]
+
+    return targets
+
+
+# ── Upfront validation ───────────────────────────────────────
+
+def validate_inputs():
+    errors      = []
+    start       = config["start_from"]
+    all_samples = get_all_samples()
+
+    if not all_samples:
+        errors.append(
+            "samples.tsv contains no samples. "
+            "Check formatting — comment lines start with #."
+        )
+
+    valid_dtypes = {"RNA-seq", "ATAC-seq", "ChIP-seq", "MOA-seq"}
+    for s in all_samples:
+        dt = get_data_type(s)
+        if dt not in valid_dtypes:
+            errors.append(
+                f"Sample '{s}': invalid data_type '{dt}'. "
+                f"Must be one of: {', '.join(sorted(valid_dtypes))}"
+            )
+
+    # Required input files per start_from
+    for s in all_samples:
+        if start == "fastq":
+            for col in ["R1", "R2"]:
+                val = samples.loc[s, col]
+                if pd.isna(val) or str(val) == "NA":
+                    errors.append(
+                        f"Sample '{s}': start_from=fastq but {col} is NA."
+                    )
+                elif not Path(val).exists():
+                    errors.append(
+                        f"Sample '{s}': {col} not found: {val}"
+                    )
+        elif start == "trimmed":
+            for col in ["trimmed_R1", "trimmed_R2"]:
+                val = samples.loc[s, col]
+                if pd.isna(val) or str(val) == "NA":
+                    errors.append(
+                        f"Sample '{s}': start_from=trimmed but {col} is NA."
+                    )
+                elif not Path(val).exists():
+                    errors.append(
+                        f"Sample '{s}': {col} not found: {val}"
+                    )
+        elif start == "bam":
+            val = samples.loc[s, "bam"]
+            if pd.isna(val) or str(val) == "NA":
+                errors.append(
+                    f"Sample '{s}': start_from=bam but bam column is NA."
+                )
+            elif not Path(val).exists():
+                errors.append(
+                    f"Sample '{s}': bam not found: {val}"
+                )
+        elif start == "wasp_bam":
+            val = samples.loc[s, "wasp_bam"]
+            if pd.isna(val) or str(val) == "NA":
+                errors.append(
+                    f"Sample '{s}': start_from=wasp_bam but wasp_bam column is NA."
+                )
+            elif not Path(val).exists():
+                errors.append(
+                    f"Sample '{s}': wasp_bam not found: {val}"
+                )
+
+    # Reference files — only check if relevant samples exist
+    # and only if alignment will actually run
+    if start in ["fastq", "trimmed"]:
+        if get_rnaseq_samples():
+            for key, label in [
+                ("genome_fasta", "genome_fasta"),
+                ("genome_gtf",   "genome_gtf"),
+            ]:
+                if not Path(config[key]).exists():
+                    errors.append(
+                        f"RNA-seq samples present but {label} not found: {config[key]}"
+                    )
+            star_idx = config["star_index"]
+            if not Path(star_idx).exists() or not any(Path(star_idx).iterdir()):
+                errors.append(
+                    f"star_index not found or empty: {star_idx}\n"
+                    f"       Run: snakemake build_star_index --cores {config['star_threads']} --use-conda"
+                )
+
+        if get_non_rnaseq_samples():
+            if not Path(config["genome_fasta"]).exists():
+                errors.append(
+                    f"Non-RNA-seq samples present but genome_fasta not found: {config['genome_fasta']}"
+                )
+            bt2 = config["bowtie2_index"] + ".1.bt2"
+            if not Path(bt2).exists():
+                errors.append(
+                    f"bowtie2_index not found: {bt2}\n"
+                    f"       Run: snakemake build_bowtie2_index --cores {config['bowtie2_threads']} --use-conda"
+                )
+
+    if not Path(config["vcf_raw"]).exists():
+        errors.append(f"vcf_raw not found: {config['vcf_raw']}")
+
+    if not Path(config["wasp_dir"]).exists():
+        errors.append(
+            f"wasp_dir not found: {config['wasp_dir']}\n"
+            f"       Run: git clone https://github.com/bmvdgeijn/WASP.git {config['wasp_dir']}"
+        )
+
+    # phaser_pop_samples must be valid sample IDs
+    for s in config.get("phaser_pop_samples", []):
+        if s not in all_samples:
+            errors.append(
+                f"phaser_pop_samples contains '{s}' which is not in samples.tsv"
+            )
+
+    if errors:
+        print("\n" + "=" * 60)
+        print("VALIDATION ERRORS — fix before running the pipeline:")
+        print("=" * 60)
+        for e in errors:
+            print(f"  ERROR: {e}")
+        print("=" * 60 + "\n")
+        sys.exit(1)
+
+validate_inputs()
+
+
+# ── Rule all ─────────────────────────────────────────────────
+
+rule all:
+    input:
+        get_final_targets()
+
+
+# ── Named stage targets ──────────────────────────────────────
+
+rule vcf_prep:
+    input:
+        config["vcf_star"],
+        config["vcf_phaser"],
+        config["vcf_phaser"] + ".tbi",
+        config["snp_dir"] + "/.done",
+
+rule fastqc_raw:
+    input:
+        expand(
+            "results/fastqc_raw/{sample}/{sample}_R1_fastqc.html",
+            sample=get_all_samples()
+        ),
+        "results/fastqc_raw/multiqc/multiqc_report.html",
+
+rule trim:
+    input:
+        expand(
+            "results/trim/{sample}/{sample}_R1.fastq.gz",
+            sample=get_all_samples()
+        ),
+
+rule fastqc_trimmed:
+    input:
+        expand(
+            "results/fastqc_trimmed/{sample}/{sample}_R1_fastqc.html",
+            sample=get_all_samples()
+        ),
+        "results/fastqc_trimmed/multiqc/multiqc_report.html",
+
+rule align:
+    input:
+        [get_bam(type("wc", (), {"sample": s})()) for s in get_all_samples()],
+
+rule wasp:
+    input:
+        [get_wasp_bam(type("wc", (), {"sample": s})()) for s in get_all_samples()],
+
+rule phaser_sample:
+    input:
+        expand(
+            "results/phaser_sample/{sample}/{sample}.allelic_counts.txt",
+            sample=get_all_samples()
+        ),
+        expand(
+            "results/phaser_sample/{sample}/{sample}.gene_ae.txt",
+            sample=get_all_samples()
+        ),
+
+rule phaser_pop:
+    input:
+        "results/phaser_pop/phaser_pop.txt",
+        "results/phaser_pop/phaser_pop_gene_ae.txt",
+
+rule qc:
+    input:
+        "results/qc_plots/qc_plots.done",
+
+
+# ── Include stage rules ──────────────────────────────────────
+
+include: "rules/index.smk"
+include: "rules/vcf_prep.smk"
+include: "rules/fastqc_raw.smk"
+include: "rules/trim.smk"
+include: "rules/fastqc_trimmed.smk"
+include: "rules/align.smk"
+include: "rules/wasp.smk"
+include: "rules/phaser_sample.smk"
+include: "rules/phaser_pop.smk"
+include: "rules/qc_plots.smk"
